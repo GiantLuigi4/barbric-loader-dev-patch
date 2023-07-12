@@ -17,6 +17,7 @@
 package net.fabricmc.loader.impl.launch.knot;
 
 import java.io.ByteArrayOutputStream;
+import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.lang.reflect.Constructor;
@@ -25,8 +26,11 @@ import java.net.MalformedURLException;
 import java.net.URL;
 import java.net.URLConnection;
 import java.nio.file.FileSystemNotFoundException;
+import java.nio.file.FileVisitResult;
+import java.nio.file.FileVisitor;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.security.CodeSource;
 import java.security.cert.Certificate;
 import java.util.Collection;
@@ -35,6 +39,7 @@ import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Consumer;
 import java.util.jar.Manifest;
 
 import org.spongepowered.asm.mixin.transformer.IMixinTransformer;
@@ -172,6 +177,38 @@ final class KnotClassDelegate<T extends ClassLoader & ClassLoaderAccess> impleme
 		}
 
 		this.validParentCodeSources = validPaths;
+		for (Path validParentCodeSource : validParentCodeSources) {
+			try {
+				Files.walkFileTree(validParentCodeSource, new FileVisitor<Path>() {
+					@Override
+					public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) throws IOException {
+						return FileVisitResult.CONTINUE;
+					}
+
+					@Override
+					public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
+						String str = file.toString().substring(validParentCodeSource.toString().length() + 1);
+						if (str.endsWith(".class")) {
+							str = str.replace(".class", "").replace("\\", "/").replace("/", ".");
+							System.out.println(str);
+							parentSourcedClasses.add(str);
+						}
+						return FileVisitResult.CONTINUE;
+					}
+
+					@Override
+					public FileVisitResult visitFileFailed(Path file, IOException exc) throws IOException {
+						return FileVisitResult.CONTINUE;
+					}
+
+					@Override
+					public FileVisitResult postVisitDirectory(Path dir, IOException exc) throws IOException {
+						return FileVisitResult.CONTINUE;
+					}
+				});
+			} catch (Throwable ignored) {
+			}
+		}
 	}
 
 	@Override
@@ -312,13 +349,25 @@ final class KnotClassDelegate<T extends ClassLoader & ClassLoaderAccess> impleme
 		if (!allowFromParent && !parentSourcedClasses.isEmpty()) { // propagate loadIntoTarget behavior to its nested classes
 			int pos = name.length();
 
-			while ((pos = name.lastIndexOf('$', pos - 1)) > 0) {
-				if (parentSourcedClasses.contains(name.substring(0, pos))) {
-					allowFromParent = true;
-					break;
+			if (parentSourcedClasses.contains(name)) {
+				allowFromParent = true;
+			} else {
+				while ((pos = name.lastIndexOf('$', pos - 1)) > 0) {
+					if (parentSourcedClasses.contains(name.substring(0, pos))) {
+						allowFromParent = true;
+						break;
+					}
 				}
 			}
 		}
+
+//		if (!allowFromParent) {
+//			for (Path validParentCodeSource : validParentCodeSources) {
+//				if (validParentCodeSource.resolve(name.replace(".", "/") + ".class").toFile().exists()) {
+//					allowFromParent = true;
+//				}
+//			}
+//		}
 
 		byte[] input = getPostMixinClassByteArray(name, allowFromParent);
 		if (input == null) return null;
